@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver core for Samsung SoC onboard UARTs.
  *
  * Ben Dooks, Copyright (c) 2003-2008 Simtec Electronics
  *	http://armlinux.simtec.co.uk/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
 */
 
 /* Hote on 2410 error handling
@@ -803,11 +800,10 @@ static unsigned int s3c24xx_serial_tx_empty(struct uart_port *port)
 		if ((ufstat & info->tx_fifomask) != 0 ||
 		    (ufstat & info->tx_fifofull))
 			return 0;
-
-		return 1;
+		return TIOCSER_TEMT;
 	}
 
-	return s3c24xx_serial_txempty_nofifo(port);
+	return s3c24xx_serial_txempty_nofifo(port) ? TIOCSER_TEMT : 0;
 }
 
 /* no modem control lines */
@@ -855,6 +851,8 @@ static void s3c24xx_serial_break_ctl(struct uart_port *port, int break_state)
 static int s3c24xx_serial_request_dma(struct s3c24xx_uart_port *p)
 {
 	struct s3c24xx_uart_dma	*dma = p->dma;
+	struct dma_slave_caps dma_caps;
+	const char *reason = NULL;
 	int ret;
 
 	/* Default slave configuration parameters */
@@ -870,15 +868,35 @@ static int s3c24xx_serial_request_dma(struct s3c24xx_uart_port *p)
 
 	dma->rx_chan = dma_request_chan(p->port.dev, "rx");
 
-	if (IS_ERR(dma->rx_chan))
-		return PTR_ERR(dma->rx_chan);
+	if (IS_ERR(dma->rx_chan)) {
+		reason = "DMA RX channel request failed";
+		ret = PTR_ERR(dma->rx_chan);
+		goto err_warn;
+	}
+
+	ret = dma_get_slave_caps(dma->rx_chan, &dma_caps);
+	if (ret < 0 ||
+	    dma_caps.residue_granularity < DMA_RESIDUE_GRANULARITY_BURST) {
+		reason = "insufficient DMA RX engine capabilities";
+		ret = -EOPNOTSUPP;
+		goto err_release_rx;
+	}
 
 	dmaengine_slave_config(dma->rx_chan, &dma->rx_conf);
 
 	dma->tx_chan = dma_request_chan(p->port.dev, "tx");
 	if (IS_ERR(dma->tx_chan)) {
+		reason = "DMA TX channel request failed";
 		ret = PTR_ERR(dma->tx_chan);
 		goto err_release_rx;
+	}
+
+	ret = dma_get_slave_caps(dma->tx_chan, &dma_caps);
+	if (ret < 0 ||
+	    dma_caps.residue_granularity < DMA_RESIDUE_GRANULARITY_BURST) {
+		reason = "insufficient DMA TX engine capabilities";
+		ret = -EOPNOTSUPP;
+		goto err_release_tx;
 	}
 
 	dmaengine_slave_config(dma->tx_chan, &dma->tx_conf);
@@ -895,6 +913,7 @@ static int s3c24xx_serial_request_dma(struct s3c24xx_uart_port *p)
 	dma->rx_addr = dma_map_single(p->port.dev, dma->rx_buf,
 				dma->rx_size, DMA_FROM_DEVICE);
 	if (dma_mapping_error(p->port.dev, dma->rx_addr)) {
+		reason = "DMA mapping error for RX buffer";
 		ret = -EIO;
 		goto err_free_rx;
 	}
@@ -903,6 +922,7 @@ static int s3c24xx_serial_request_dma(struct s3c24xx_uart_port *p)
 	dma->tx_addr = dma_map_single(p->port.dev, p->port.state->xmit.buf,
 				UART_XMIT_SIZE, DMA_TO_DEVICE);
 	if (dma_mapping_error(p->port.dev, dma->tx_addr)) {
+		reason = "DMA mapping error for TX buffer";
 		ret = -EIO;
 		goto err_unmap_rx;
 	}
@@ -918,6 +938,9 @@ err_release_tx:
 	dma_release_channel(dma->tx_chan);
 err_release_rx:
 	dma_release_channel(dma->rx_chan);
+err_warn:
+	if (reason)
+		dev_warn(p->port.dev, "%s, DMA will not be used\n", reason);
 	return ret;
 }
 
@@ -1036,8 +1059,6 @@ static int s3c64xx_serial_startup(struct uart_port *port)
 	if (ourport->dma) {
 		ret = s3c24xx_serial_request_dma(ourport);
 		if (ret < 0) {
-			dev_warn(port->dev,
-				 "DMA request failed, DMA will not be used\n");
 			devm_kfree(port->dev, ourport->dma);
 			ourport->dma = NULL;
 		}
@@ -1177,8 +1198,12 @@ static unsigned int s3c24xx_serial_getclk(struct s3c24xx_uart_port *ourport,
 			continue;
 
 		rate = clk_get_rate(clk);
-		if (!rate)
+		if (!rate) {
+			dev_err(ourport->port.dev,
+				"Failed to get clock rate for %s.\n", clkname);
+			clk_put(clk);
 			continue;
+		}
 
 		if (ourport->info->has_divslot) {
 			unsigned long div = rate / req_baud;
@@ -1204,10 +1229,18 @@ static unsigned int s3c24xx_serial_getclk(struct s3c24xx_uart_port *ourport,
 			calc_deviation = -calc_deviation;
 
 		if (calc_deviation < deviation) {
+			/*
+			 * If we find a better clk, release the previous one, if
+			 * any.
+			 */
+			if (!IS_ERR(*best_clk))
+				clk_put(*best_clk);
 			*best_clk = clk;
 			best_quot = quot;
 			*clk_num = cnt;
 			deviation = calc_deviation;
+		} else {
+			clk_put(clk);
 		}
 	}
 

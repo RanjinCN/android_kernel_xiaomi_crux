@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Driver for USB Mass Storage compliant devices
  * Unusual Devices File
@@ -7,23 +8,6 @@
  *
  * Initial work by:
  *   (c) 2000 Adam J. Richter (adam@yggdrasil.com), Yggdrasil Computing, Inc.
- *
- * Please see http://www.one-eyed-alien.net/~mdharm/linux-usb for more
- * information about this driver.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /*
@@ -44,10 +28,7 @@
  *	  explanation of the reason for the entry),
  *	- a copy of /sys/kernel/debug/usb/devices with your device plugged in
  *	  running with this patch.
- * Send your submission to either Phil Dibowitz <phil@ipom.com> or
- * Alan Stern <stern@rowland.harvard.edu>, and don't forget to CC: the
- * USB development list <linux-usb@vger.kernel.org> and the USB storage list
- * <usb-storage@lists.one-eyed-alien.net>
+ * Send your submission to the USB development list <linux-usb@vger.kernel.org>
  */
 
 /*
@@ -2430,6 +2411,17 @@ UNUSUAL_DEV(  0xc251, 0x4003, 0x0100, 0x0100,
 		"V2M MotherBoard",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_NOT_LOCKABLE),
+
+/*
+ * Reported by Icenowy Zheng <uwu@icenowy.me>
+ * This is an interface for vendor-specific cryptic commands instead
+ * of real USB storage device.
+ */
+UNUSUAL_DEV(  0xe5b7, 0x0811, 0x0100, 0x0100,
+		"ZhuHai JieLi Technology",
+		"JieLi BR21",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_IGNORE_DEVICE),
 
 /* Reported by Andrew Simmons <andrew.simmons@gmail.com> */
 UNUSUAL_DEV(  0xed06, 0x4500, 0x0001, 0x0001,

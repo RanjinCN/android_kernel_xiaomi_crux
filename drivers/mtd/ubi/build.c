@@ -533,8 +533,17 @@ static int get_bad_peb_limit(const struct ubi_device *ubi, int max_beb_per1024)
 	int limit, device_pebs;
 	uint64_t device_size;
 
-	if (!max_beb_per1024)
-		return 0;
+	if (!max_beb_per1024) {
+		/*
+		 * Since max_beb_per1024 has not been set by the user in either
+		 * the cmdline or Kconfig, use mtd_max_bad_blocks to set the
+		 * limit if it is supported by the device.
+		 */
+		limit = mtd_max_bad_blocks(ubi->mtd, 0, ubi->mtd->size);
+		if (limit < 0)
+			return 0;
+		return limit;
+	}
 
 	/*
 	 * Here we are using size of the entire flash chip and
@@ -865,6 +874,13 @@ int ubi_attach_mtd_dev(struct mtd_info *mtd, int ubi_num,
 	 */
 	if (mtd->type == MTD_MLCNANDFLASH) {
 		pr_err("ubi: refuse attaching mtd%d - MLC NAND is not supported\n",
+			mtd->index);
+		return -EINVAL;
+	}
+
+	/* UBI cannot work on flashes with zero erasesize. */
+	if (!mtd->erasesize) {
+		pr_err("ubi: refuse attaching mtd%d - zero erasesize flash is not supported\n",
 			mtd->index);
 		return -EINVAL;
 	}

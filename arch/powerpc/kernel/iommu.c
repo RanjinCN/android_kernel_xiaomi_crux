@@ -145,17 +145,28 @@ static int fail_iommu_bus_notify(struct notifier_block *nb,
 	return 0;
 }
 
-static struct notifier_block fail_iommu_bus_notifier = {
+/*
+ * PCI and VIO buses need separate notifier_block structs, since they're linked
+ * list nodes.  Sharing a notifier_block would mean that any notifiers later
+ * registered for PCI buses would also get called by VIO buses and vice versa.
+ */
+static struct notifier_block fail_iommu_pci_bus_notifier = {
 	.notifier_call = fail_iommu_bus_notify
 };
+
+#ifdef CONFIG_IBMVIO
+static struct notifier_block fail_iommu_vio_bus_notifier = {
+	.notifier_call = fail_iommu_bus_notify
+};
+#endif
 
 static int __init fail_iommu_setup(void)
 {
 #ifdef CONFIG_PCI
-	bus_register_notifier(&pci_bus_type, &fail_iommu_bus_notifier);
+	bus_register_notifier(&pci_bus_type, &fail_iommu_pci_bus_notifier);
 #endif
 #ifdef CONFIG_IBMVIO
-	bus_register_notifier(&vio_bus_type, &fail_iommu_bus_notifier);
+	bus_register_notifier(&vio_bus_type, &fail_iommu_vio_bus_notifier);
 #endif
 
 	return 0;
@@ -1012,31 +1023,6 @@ long iommu_tce_xchg(struct iommu_table *tbl, unsigned long entry,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(iommu_tce_xchg);
-
-#ifdef CONFIG_PPC_BOOK3S_64
-long iommu_tce_xchg_rm(struct iommu_table *tbl, unsigned long entry,
-		unsigned long *hpa, enum dma_data_direction *direction)
-{
-	long ret;
-
-	ret = tbl->it_ops->exchange_rm(tbl, entry, hpa, direction);
-
-	if (!ret && ((*direction == DMA_FROM_DEVICE) ||
-			(*direction == DMA_BIDIRECTIONAL))) {
-		struct page *pg = realmode_pfn_to_page(*hpa >> PAGE_SHIFT);
-
-		if (likely(pg)) {
-			SetPageDirty(pg);
-		} else {
-			tbl->it_ops->exchange_rm(tbl, entry, hpa, direction);
-			ret = -EFAULT;
-		}
-	}
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(iommu_tce_xchg_rm);
-#endif
 
 int iommu_take_ownership(struct iommu_table *tbl)
 {

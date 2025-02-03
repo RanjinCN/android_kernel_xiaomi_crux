@@ -281,6 +281,7 @@ extern char __indirect_thunk_end[];
  */
 static __always_inline void vmexit_fill_RSB(void)
 {
+#ifdef CONFIG_RETPOLINE
 	unsigned long loops;
 
 	asm volatile (ANNOTATE_NOSPEC_ALTERNATIVE
@@ -292,6 +293,7 @@ static __always_inline void vmexit_fill_RSB(void)
 		      "910:"
 		      : "=r" (loops), ASM_CALL_CONSTRAINT
 		      : : "memory" );
+#endif
 }
 
 static __always_inline
@@ -410,16 +412,20 @@ static inline void mds_idle_clear_cpu_buffers(void)
  *    lfence
  *    jmp spec_trap
  *  do_rop:
- *    mov %rax,(%rsp)
+ *    mov %rax,(%rsp) for x86_64
+ *    mov %edx,(%esp) for x86_32
  *    retq
  *
  * Without retpolines configured:
  *
- *    jmp *%rax
+ *    jmp *%rax for x86_64
+ *    jmp *%edx for x86_32
  */
 #ifdef CONFIG_RETPOLINE
-# define RETPOLINE_RAX_BPF_JIT_SIZE	17
-# define RETPOLINE_RAX_BPF_JIT()				\
+# ifdef CONFIG_X86_64
+#  define RETPOLINE_RAX_BPF_JIT_SIZE	17
+#  define RETPOLINE_RAX_BPF_JIT()				\
+do {								\
 	EMIT1_off32(0xE8, 7);	 /* callq do_rop */		\
 	/* spec_trap: */					\
 	EMIT2(0xF3, 0x90);       /* pause */			\
@@ -427,11 +433,30 @@ static inline void mds_idle_clear_cpu_buffers(void)
 	EMIT2(0xEB, 0xF9);       /* jmp spec_trap */		\
 	/* do_rop: */						\
 	EMIT4(0x48, 0x89, 0x04, 0x24); /* mov %rax,(%rsp) */	\
-	EMIT1(0xC3);             /* retq */
-#else
-# define RETPOLINE_RAX_BPF_JIT_SIZE	2
-# define RETPOLINE_RAX_BPF_JIT()				\
-	EMIT2(0xFF, 0xE0);	 /* jmp *%rax */
+	EMIT1(0xC3);             /* retq */			\
+} while (0)
+# else /* !CONFIG_X86_64 */
+#  define RETPOLINE_EDX_BPF_JIT()				\
+do {								\
+	EMIT1_off32(0xE8, 7);	 /* call do_rop */		\
+	/* spec_trap: */					\
+	EMIT2(0xF3, 0x90);       /* pause */			\
+	EMIT3(0x0F, 0xAE, 0xE8); /* lfence */			\
+	EMIT2(0xEB, 0xF9);       /* jmp spec_trap */		\
+	/* do_rop: */						\
+	EMIT3(0x89, 0x14, 0x24); /* mov %edx,(%esp) */		\
+	EMIT1(0xC3);             /* ret */			\
+} while (0)
+# endif
+#else /* !CONFIG_RETPOLINE */
+# ifdef CONFIG_X86_64
+#  define RETPOLINE_RAX_BPF_JIT_SIZE	2
+#  define RETPOLINE_RAX_BPF_JIT()				\
+	EMIT2(0xFF, 0xE0);       /* jmp *%rax */
+# else /* !CONFIG_X86_64 */
+#  define RETPOLINE_EDX_BPF_JIT()				\
+	EMIT2(0xFF, 0xE2)        /* jmp *%edx */
+# endif
 #endif
 
 #endif /* _ASM_X86_NOSPEC_BRANCH_H_ */

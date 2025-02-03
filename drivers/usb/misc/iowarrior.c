@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Native support for the I/O-Warrior USB devices
  *
@@ -89,7 +90,6 @@ struct iowarrior {
 	atomic_t write_busy;		/* number of write-urbs submitted */
 	atomic_t read_idx;
 	atomic_t intr_idx;
-	spinlock_t intr_idx_lock;	/* protects intr_idx */
 	atomic_t overflow_flag;		/* signals an index 'rollover' */
 	int present;			/* this is 1 as long as the device is connected */
 	int opened;			/* this is 1 if the device is currently open */
@@ -176,7 +176,6 @@ static void iowarrior_callback(struct urb *urb)
 		goto exit;
 	}
 
-	spin_lock(&dev->intr_idx_lock);
 	intr_idx = atomic_read(&dev->intr_idx);
 	/* aux_idx become previous intr_idx */
 	aux_idx = (intr_idx == 0) ? (MAX_INTERRUPT_BUFFER - 1) : (intr_idx - 1);
@@ -191,7 +190,6 @@ static void iowarrior_callback(struct urb *urb)
 		    (dev->read_queue + offset, urb->transfer_buffer,
 		     dev->report_size)) {
 			/* equal values on interface 0 will be ignored */
-			spin_unlock(&dev->intr_idx_lock);
 			goto exit;
 		}
 	}
@@ -212,7 +210,6 @@ static void iowarrior_callback(struct urb *urb)
 	*(dev->read_queue + offset + (dev->report_size)) = dev->serial_number++;
 
 	atomic_set(&dev->intr_idx, aux_idx);
-	spin_unlock(&dev->intr_idx_lock);
 	/* tell the blocking read about the new data */
 	wake_up_interruptible(&dev->read_wait);
 
@@ -284,28 +281,45 @@ static ssize_t iowarrior_read(struct file *file, char __user *buffer,
 	struct iowarrior *dev;
 	int read_idx;
 	int offset;
+	int retval;
 
 	dev = file->private_data;
 
+	if (file->f_flags & O_NONBLOCK) {
+		retval = mutex_trylock(&dev->mutex);
+		if (!retval)
+			return -EAGAIN;
+	} else {
+		retval = mutex_lock_interruptible(&dev->mutex);
+		if (retval)
+			return -ERESTARTSYS;
+	}
+
 	/* verify that the device wasn't unplugged */
-	if (!dev || !dev->present)
-		return -ENODEV;
+	if (!dev->present) {
+		retval = -ENODEV;
+		goto exit;
+	}
 
 	dev_dbg(&dev->interface->dev, "minor %d, count = %zd\n",
 		dev->minor, count);
 
 	/* read count must be packet size (+ time stamp) */
 	if ((count != dev->report_size)
-	    && (count != (dev->report_size + 1)))
-		return -EINVAL;
+	    && (count != (dev->report_size + 1))) {
+		retval = -EINVAL;
+		goto exit;
+	}
 
 	/* repeat until no buffer overrun in callback handler occur */
 	do {
 		atomic_set(&dev->overflow_flag, 0);
 		if ((read_idx = read_index(dev)) == -1) {
 			/* queue empty */
-			if (file->f_flags & O_NONBLOCK)
-				return -EAGAIN;
+			if (file->f_flags & O_NONBLOCK) {
+				retval = -EAGAIN;
+				goto exit;
+			}
 			else {
 				//next line will return when there is either new data, or the device is unplugged
 				int r = wait_event_interruptible(dev->read_wait,
@@ -316,28 +330,37 @@ static ssize_t iowarrior_read(struct file *file, char __user *buffer,
 								  -1));
 				if (r) {
 					//we were interrupted by a signal
-					return -ERESTART;
+					retval = -ERESTART;
+					goto exit;
 				}
 				if (!dev->present) {
 					//The device was unplugged
-					return -ENODEV;
+					retval = -ENODEV;
+					goto exit;
 				}
 				if (read_idx == -1) {
 					// Can this happen ???
-					return 0;
+					retval = 0;
+					goto exit;
 				}
 			}
 		}
 
 		offset = read_idx * (dev->report_size + 1);
 		if (copy_to_user(buffer, dev->read_queue + offset, count)) {
-			return -EFAULT;
+			retval = -EFAULT;
+			goto exit;
 		}
 	} while (atomic_read(&dev->overflow_flag));
 
 	read_idx = ++read_idx == MAX_INTERRUPT_BUFFER ? 0 : read_idx;
 	atomic_set(&dev->read_idx, read_idx);
+	mutex_unlock(&dev->mutex);
 	return count;
+
+exit:
+	mutex_unlock(&dev->mutex);
+	return retval;
 }
 
 /*
@@ -696,25 +719,25 @@ static int iowarrior_release(struct inode *inode, struct file *file)
 	return retval;
 }
 
-static unsigned iowarrior_poll(struct file *file, poll_table * wait)
+static __poll_t iowarrior_poll(struct file *file, poll_table * wait)
 {
 	struct iowarrior *dev = file->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	if (!dev->present)
-		return POLLERR | POLLHUP;
+		return EPOLLERR | EPOLLHUP;
 
 	poll_wait(file, &dev->read_wait, wait);
 	poll_wait(file, &dev->write_wait, wait);
 
 	if (!dev->present)
-		return POLLERR | POLLHUP;
+		return EPOLLERR | EPOLLHUP;
 
 	if (read_index(dev) != -1)
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	if (atomic_read(&dev->write_busy) < MAX_WRITES_IN_FLIGHT)
-		mask |= POLLOUT | POLLWRNORM;
+		mask |= EPOLLOUT | EPOLLWRNORM;
 	return mask;
 }
 
@@ -781,7 +804,6 @@ static int iowarrior_probe(struct usb_interface *interface,
 
 	atomic_set(&dev->intr_idx, 0);
 	atomic_set(&dev->read_idx, 0);
-	spin_lock_init(&dev->intr_idx_lock);
 	atomic_set(&dev->overflow_flag, 0);
 	init_waitqueue_head(&dev->read_wait);
 	atomic_set(&dev->write_busy, 0);

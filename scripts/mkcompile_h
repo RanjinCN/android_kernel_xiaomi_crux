@@ -29,12 +29,7 @@ LC_ALL=C
 export LC_ALL
 
 if [ -z "$KBUILD_BUILD_VERSION" ]; then
-	if [ -r .version ]; then
-		VERSION=`cat .version`
-	else
-		VERSION=0
-		echo 0 > .version
-	fi
+	VERSION=$(cat .version 2>/dev/null || echo 1)
 else
 	VERSION=$KBUILD_BUILD_VERSION
 fi
@@ -50,7 +45,7 @@ else
 	LINUX_COMPILE_BY=$KBUILD_BUILD_USER
 fi
 if test -z "$KBUILD_BUILD_HOST"; then
-	LINUX_COMPILE_HOST=`hostname`
+	LINUX_COMPILE_HOST=`uname -n`
 else
 	LINUX_COMPILE_HOST=$KBUILD_BUILD_HOST
 fi
